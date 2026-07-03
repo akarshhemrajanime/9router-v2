@@ -514,13 +514,40 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
-    parser.add_argument("--invite_link", required=True)
-    parser.add_argument("--proxy")
+    # Node kirim --invite-link (hyphen), dulu kita pakai --invite_link
+    parser.add_argument("--invite-link", "--invite_link", dest="invite_link", default="")
+    parser.add_argument("--profiles-dir", "--profiles_dir", dest="profiles_dir", default="")
+    parser.add_argument("--signup-method", "--signup_method", dest="signup_method", default="email")
+    parser.add_argument("--skip-canva", "--skip_canva", dest="skip_canva", action="store_true")
+    parser.add_argument("--canva-delay", "--canva_delay", dest="canva_delay", type=int, default=0)
+    parser.add_argument("--canva-headless", "--canva_headless", dest="canva_headless", action="store_true")
+    parser.add_argument("--leave-canva-team", "--leave_canva_team", dest="leave_canva_team", action="store_true")
     parser.add_argument("--headless", action="store_true")
+    # Proxy args dari Node
+    parser.add_argument("--proxy", default=None)
+    parser.add_argument("--proxy-server", "--proxy_server", dest="proxy_server", default=None)
+    parser.add_argument("--proxy-user", "--proxy_user", dest="proxy_user", default=None)
+    parser.add_argument("--proxy-pass", "--proxy_pass", dest="proxy_pass", default=None)
     args = parser.parse_args()
-    
+
+    # Build proxy string dari proxy-server/user/pass jika ada
+    proxy = args.proxy
+    if not proxy and args.proxy_server:
+        if args.proxy_user and args.proxy_pass:
+            from urllib.parse import urlparse as _up
+            p = _up(args.proxy_server)
+            proxy = f"{p.scheme}://{args.proxy_user}:{args.proxy_pass}@{p.hostname}:{p.port}"
+        else:
+            proxy = args.proxy_server
+
+    if args.canva_delay > 0:
+        import random
+        delay = random.randint(1, args.canva_delay)
+        log_step(f"Pre-Canva delay {delay}s...")
+        time.sleep(delay)
+
     try:
-        success = run_automation(args.email, args.password, args.invite_link, args.proxy, args.headless)
+        success = run_automation(args.email, args.password, args.invite_link, proxy, args.headless)
         print(json.dumps({"success": success, "email": args.email}))
     except Exception as e:
         log_step(f"ERROR: {str(e)}")
