@@ -1,6 +1,7 @@
 "use server";
 
 
+import { GET as antigravityGet } from "../antigravity-mitm/route.js";
 import { GET as claudeGet } from "../claude-settings/route.js";
 import { GET as codexGet } from "../codex-settings/route.js";
 import { GET as opencodeGet } from "../opencode-settings/route.js";
@@ -15,6 +16,7 @@ import { GET as deepseekTuiGet } from "../deepseek-tui-settings/route.js";
 import { GET as jcodeGet } from "../jcode-settings/route.js";
 
 const STATUS_GETTERS = {
+  antigravity: antigravityGet,
   claude: claudeGet,
   codex: codexGet,
   opencode: opencodeGet,

@@ -70,12 +70,26 @@ export async function GET(req: any, res: any) {
     const status = await getMitmStatus();
     const settings = await getSettings();
     const hasCachedPassword = !!getCachedPassword() || !!(await loadEncryptedPassword());
+    
+    // Check if agy binary is installed in system
+    let isAgyInstalled = false;
+    try {
+      const cmd = process.platform === "win32" ? "where agy" : "which agy";
+      await execAsync(cmd, { windowsHide: true });
+      isAgyInstalled = true;
+    } catch {
+      // Fallback: check standard paths or assume installed if DNS was ever enabled
+      isAgyInstalled = status.dnsStatus?.antigravity || false;
+    }
+
     return res.json({
+      installed: isAgyInstalled,
       running: status.running,
       pid: status.pid || null,
       certExists: status.certExists || false,
       certTrusted: status.certTrusted || false,
       dnsStatus: status.dnsStatus || {},
+      has9Router: status.dnsStatus?.antigravity || false, // configured if DNS is redirected
       hasCachedPassword,
       isWin,
       needsSudoPassword: !isWin && !hasCachedPassword && isSudoPasswordRequired(),
