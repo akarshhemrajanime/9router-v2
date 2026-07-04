@@ -411,6 +411,8 @@ def extract_global_api_key(page, password):
             "input[readonly][type='text']",
             "code",
             ".cf-input-code",
+            "input[class*='code']",
+            "input[class*='api']",
         ]:
             try:
                 el = page.locator(sel).first
@@ -420,6 +422,14 @@ def extract_global_api_key(page, password):
                         return val.strip()
             except Exception:
                 continue
+
+        # Take screenshot to debug
+        try:
+            page.screenshot(path="/tmp/cf_api_key_page.png")
+            log_step("Screenshot saved: /tmp/cf_api_key_page.png")
+        except Exception:
+            pass
+
     except Exception as e:
         log_step(f"extract_global_api_key error: {e}")
     return None
@@ -860,34 +870,67 @@ def main():
                     wait_until="domcontentloaded", timeout=20000
                 )
                 wait_for_cf_clearance(page, timeout=15)
-                time.sleep(2)
+                time.sleep(3)
 
-                # Use "Workers AI" template if available
+                # Give token a name
+                name_input = page.locator("input[placeholder*='Token name'], input[name*='name'], input[aria-label*='Token name']").first
+                if name_input.is_visible(timeout=3000):
+                    name_input.fill("9router-workers-ai")
+                    log_step("Token name filled")
+                    time.sleep(0.5)
+
+                # Expand "AI & Machine Learning" section
+                ai_section = page.locator("button:has-text('AI & Machine Learning'), [aria-label*='AI'], text='AI & Machine Learning'").first
+                try:
+                    if ai_section.is_visible(timeout=3000):
+                        ai_section.click()
+                        time.sleep(1)
+                        log_step("AI & Machine Learning section expanded")
+                except Exception:
+                    log_step("Could not find AI section, trying all permissions...")
+
+                # Select "Workers AI" permission — find checkbox or dropdown
                 for sel in [
-                    "button:has-text('Workers AI')",
-                    "a:has-text('Workers AI')",
-                    "[data-testid='workers-ai-template']",
+                    "text=Workers AI",
+                    "label:has-text('Workers AI')",
+                    "input[value*='workers_ai'], input[value*='Workers AI']",
                 ]:
                     try:
-                        t = page.locator(sel).first
-                        if t.is_visible(timeout=2000):
-                            t.click()
-                            time.sleep(2)
+                        el = page.locator(sel).first
+                        if el.is_visible(timeout=2000):
+                            el.click()
+                            time.sleep(0.5)
+                            log_step(f"Workers AI permission selected: {sel}")
                             break
                     except Exception:
                         continue
 
-                # Continue to summary → Create Token
-                for sel in ["button:has-text('Continue to summary')", "button:has-text('Next')"]:
+                # Set permission level dropdown to "Edit" or "Read"
+                for sel in ["select[name*='workers'], select.permission-select"]:
+                    try:
+                        dropdown = page.locator(sel).first
+                        if dropdown.is_visible(timeout=1000):
+                            dropdown.select_option("edit")
+                            time.sleep(0.5)
+                            break
+                    except Exception:
+                        continue
+
+                time.sleep(1)
+
+                # Continue to summary
+                for sel in ["button:has-text('Continue to summary')", "button:has-text('Continue')", "button:has-text('Next')"]:
                     try:
                         b = page.locator(sel).first
                         if b.is_visible(timeout=2000):
                             b.click()
                             time.sleep(2)
+                            log_step("Clicked Continue to summary")
                             break
                     except Exception:
                         continue
 
+                # Create Token button
                 for sel in ["button:has-text('Create Token')", "button[type='submit']"]:
                     try:
                         b = page.locator(sel).last
