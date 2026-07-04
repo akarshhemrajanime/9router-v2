@@ -892,6 +892,109 @@ def main():
             except Exception as e:
                 log_step(f"account_id via API error: {e}")
 
+        # ── Step 9/10: Buat Workers AI Token via Session API ─────────────────
+        global_key = None
+        workers_ai_token = None
+
+        if not account_id:
+            die("Tidak bisa membuat API Token: account_id tidak ditemukan")
+
+        log_step("Membuat Workers AI API Token...")
+
+        # ── Strategy A: POST via session cookies (no browser UI needed) ───────
+        def create_token_via_session(page):
+            """Use browser session cookies to call CF API directly."""
+            import requests as _req
+            # Get cookies from browser
+            cookies_list = page.context.cookies()
+            cookies = {c['name']: c['value'] for c in cookies_list}
+            # Get csrf/x-atok-csrf token if available
+            x_csrf = cookies.get('_cf_bm', '')
+
+            base = "https://dash.cloudflare.com"
+            sess = _req.Session()
+            sess.cookies.update(cookies)
+            sess.headers.update({
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+                "Referer": f"{base}/profile/api-tokens/create",
+                "Origin": base,
+            })
+
+            # Step A1: get Workers AI permission group ID
+            try:
+                r = sess.get(f"{base}/api/v4/user/tokens/permission_groups", timeout=15)
+                pg_data = r.json()
+                workers_ai_id = None
+                for pg in pg_data.get('result', []):
+                    name = pg.get('name', '')
+                    if 'Workers AI' in name and 'Read' in name:
+                        workers_ai_id = pg['id']
+                        log_step(f"Workers AI permission group: {pg['name']} id={pg['id']}")
+                        break
+                if not workers_ai_id:
+                    # Try Workers AI:Edit
+                    for pg in pg_data.get('result', []):
+                        if 'Workers AI' in pg.get('name', ''):
+                            workers_ai_id = pg['id']
+                            log_step(f"Workers AI fallback: {pg['name']} id={pg['id']}")
+                            break
+            except Exception as e:
+                log_step(f"Permission groups fetch failed: {e}")
+                return None
+
+            if not workers_ai_id:
+                log_step("Workers AI permission group not found")
+                return None
+
+            # Step A2: POST create token
+            payload = {
+                "name": "9router-workers-ai",
+                "policies": [{
+                    "effect": "allow",
+                    "resources": {f"com.cloudflare.api.account.{account_id}": "*"},
+                    "permission_groups": [{"id": workers_ai_id}]
+                }]
+            }
+            try:
+                r2 = sess.post(f"{base}/api/v4/user/tokens", json=payload, timeout=15)
+                resp2 = r2.json()
+                log_step(f"Token create response: {str(resp2)[:200]}")
+                if resp2.get('success'):
+                    token_val = resp2['result'].get('value', '')
+                    if token_val:
+                        return token_val
+            except Exception as e:
+                log_step(f"Token POST failed: {e}")
+            return None
+
+        try:
+            workers_ai_token = create_token_via_session(page)
+            if workers_ai_token:
+                log_step(f"Token via session API: {workers_ai_token[:12]}...")
+        except Exception as e:
+            log_step(f"Session API token failed: {e}")
+
+        # ── Strategy B: Browser UI — /profile/api-tokens/create (dropdown form)
+        if not workers_ai_token:
+            log_step("Fallback: browser UI token creation")
+            for create_url in [
+                "https://dash.cloudflare.com/profile/api-tokens/create",
+                f"https://dash.cloudflare.com/{account_id}/api-tokens/create",
+            ]:
+                try:
+                    page.goto(create_url, wait_until="domcontentloaded", timeout=25000)
+                    wait_for_cf_clearance(page, timeout=15)
+                    time.sleep(4)
+                    current = page.url
+                    log_step(f"Create token URL: {current}")
+                    if "api-tokens/create" not in current:
+                        log_step("Redirected away, try next...")
+                        continue
+                    break
+                except Exception as e:
+                    log_step(f"Nav error: {e}")
+                    continue
+
         # Method 4: navigate to /accounts and parse
         if not account_id:
             try:
