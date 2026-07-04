@@ -911,17 +911,6 @@ def main():
             log_step("WARN: Account ID tidak ditemukan, lanjut tanpa account_id")
 
         # ── Step 9: Extract Global API Key ────────────────────────────────────
-        # First navigate to API tokens page to trigger the identity popup if any
-        try:
-            page.goto("https://dash.cloudflare.com/profile/api-tokens", wait_until="domcontentloaded", timeout=20000)
-            wait_for_cf_clearance(page, timeout=10)
-            time.sleep(3)
-            # Handle "Verify Your Identity" popup - send OTP via Ammail
-            if ammail_ok:
-                handle_identity_verification(page, args.ammail_base_url, args.ammail_api_key, args.email)
-        except Exception as e:
-            log_step(f"Pre-step 9 nav error: {e}")
-
         global_key = None
         try:
             global_key = extract_global_api_key(
