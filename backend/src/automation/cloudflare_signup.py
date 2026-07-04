@@ -875,7 +875,6 @@ def main():
                     log_step(f"Account ID from JS: {account_id[:8]}...")
             except Exception as e:
                 log_step(f"account_id from JS error: {e}")
-
         # Method 3: CF API /accounts using session cookies
         if not account_id:
             try:
@@ -910,145 +909,158 @@ def main():
         else:
             log_step("WARN: Account ID tidak ditemukan, lanjut tanpa account_id")
 
-        # ── Step 9: Extract Global API Key ────────────────────────────────────
+        # ── Step 9: Skip Global API Key (needs OTP) — buat Account API Token langsung ──
         global_key = None
-        try:
-            global_key = extract_global_api_key(
-                page, args.password,
-                ammail_base_url=args.ammail_base_url,
-                ammail_api_key=args.ammail_api_key,
-                email=args.email,
-            )
-        except Exception as e:
-            log_step(f"extract_global_api_key failed: {e}")
-
-        if not global_key:
-            log_step("Global API Key tidak bisa diambil, akan pakai Workers AI Token saja...")
-
-        # Only die if BOTH missing
-        if not global_key and not account_id:
-            die("Tidak bisa mengambil API Key atau Account ID. Coba manual.")
-
-        # ── Step 10: Create Workers AI token ──────────────────────────────────
         workers_ai_token = None
 
-        # 10a: Via CF REST API using Global API Key (fastest)
-        if global_key and account_id:
-            log_step("Membuat Workers AI API Token via API...")
-            workers_ai_token = create_workers_ai_token(global_key, args.email, account_id)
-            if workers_ai_token:
-                log_step("Workers AI Token berhasil dibuat via API!")
+        if not account_id:
+            die("Tidak bisa membuat API Token: account_id tidak ditemukan")
 
-        # 10b: Via browser — navigate to Create Token page and fill form
-        if not workers_ai_token and account_id:
-            log_step("Mencoba buat API Token via browser...")
+        # ── Step 10: Buat Workers AI Token via Account API Tokens page ────────
+        log_step("Membuat Workers AI API Token via browser...")
+        try:
+            create_url = f"https://dash.cloudflare.com/{account_id}/api-tokens/create"
+            page.goto(create_url, wait_until="domcontentloaded", timeout=25000)
+            wait_for_cf_clearance(page, timeout=15)
+            time.sleep(4)
+            log_step(f"Halaman create token terbuka: {page.url}")
+
+            # Token name
+            name_input = page.locator("input[placeholder*='Token name'], input[name*='name'], input[aria-label*='Token name']").first
+            if name_input.is_visible(timeout=4000):
+                name_input.fill("9router-workers-ai")
+                log_step("Token name filled")
+                time.sleep(0.5)
+
+            # Expand "AI & Machine Learning" section
+            for sel in ["text=AI & Machine Learning"]:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=4000):
+                        el.click()
+                        time.sleep(2)
+                        log_step("AI & Machine Learning section expanded")
+                        break
+                except Exception:
+                    continue
+
+            # Click "Edit" button specifically in the Workers AI row
+            # The row contains "Workers AI" text and has Read/Edit buttons
+            workers_ai_edit_clicked = False
             try:
-                page.goto(
-                    f"https://dash.cloudflare.com/{account_id}/api-tokens/create",
-                    wait_until="domcontentloaded", timeout=20000
-                )
-                wait_for_cf_clearance(page, timeout=15)
-                time.sleep(3)
-
-                # Give token a name
-                name_input = page.locator("input[placeholder*='Token name'], input[name*='name'], input[aria-label*='Token name']").first
-                if name_input.is_visible(timeout=3000):
-                    name_input.fill("9router-workers-ai")
-                    log_step("Token name filled")
-                    time.sleep(0.5)
-
-                # Expand "AI & Machine Learning" section by clicking the row
-                ai_expanded = False
-                for sel in [
-                    "text=AI & Machine Learning",
-                    "button:has-text('AI')",
-                    "[aria-label*='AI']",
-                ]:
-                    try:
-                        el = page.locator(sel).first
-                        if el.is_visible(timeout=3000):
-                            el.click()
-                            time.sleep(1.5)
-                            ai_expanded = True
-                            log_step("AI & Machine Learning section expanded")
-                            break
-                    except Exception:
-                        continue
-
-                if not ai_expanded:
-                    log_step("Could not find AI section, trying all permissions...")
-
-                # Select "Workers AI" permission — find checkbox or dropdown
-                for sel in [
-                    "text=Workers AI",
-                    "label:has-text('Workers AI')",
-                    "input[value*='workers_ai'], input[value*='Workers AI']",
-                ]:
-                    try:
-                        el = page.locator(sel).first
-                        if el.is_visible(timeout=2000):
-                            el.click()
-                            time.sleep(0.5)
-                            log_step(f"Workers AI permission selected: {sel}")
-                            break
-                    except Exception:
-                        continue
-
-                # Set permission level dropdown to "Edit" or "Read"
-                for sel in ["select[name*='workers'], select.permission-select"]:
-                    try:
-                        dropdown = page.locator(sel).first
-                        if dropdown.is_visible(timeout=1000):
-                            dropdown.select_option("edit")
-                            time.sleep(0.5)
-                            break
-                    except Exception:
-                        continue
-
-                time.sleep(1)
-
-                # Continue to summary
-                for sel in ["button:has-text('Continue to summary')", "button:has-text('Continue')", "button:has-text('Next')"]:
-                    try:
-                        b = page.locator(sel).first
-                        if b.is_visible(timeout=2000):
-                            b.click()
-                            time.sleep(2)
-                            log_step("Clicked Continue to summary")
-                            break
-                    except Exception:
-                        continue
-
-                # Create Token button
-                for sel in ["button:has-text('Create Token')", "button[type='submit']"]:
-                    try:
-                        b = page.locator(sel).last
-                        if b.is_visible(timeout=2000):
-                            b.click()
-                            time.sleep(3)
-                            break
-                    except Exception:
-                        continue
-
-                # Extract created token
-                for sel in ["code", "input[readonly]", "[data-testid='token-value']", ".cf-input-code"]:
-                    try:
-                        el = page.locator(sel).first
-                        if el.is_visible(timeout=3000):
-                            val = el.input_value() if "input" in sel else el.text_content()
-                            if val and len(val.strip()) > 10:
-                                workers_ai_token = val.strip()
-                                log_step("Workers AI Token berhasil dibuat via browser!")
-                                break
-                    except Exception:
-                        continue
-
-                if not workers_ai_token:
-                    # Fallback: use Global API Key if we got it
-                    page.screenshot(path="/tmp/cf_create_token.png")
-                    log_step("Screenshot: /tmp/cf_create_token.png")
+                # Find row containing "Workers AI", then click its Edit button
+                row = page.locator("tr:has-text('Workers AI'), div:has-text('Workers AI')").last
+                edit_btn = row.locator("button:has-text('Edit')").first
+                if edit_btn.is_visible(timeout=3000):
+                    edit_btn.click()
+                    time.sleep(1)
+                    log_step("Workers AI: Edit permission clicked!")
+                    workers_ai_edit_clicked = True
             except Exception as e:
-                log_step(f"Browser token creation error: {e}")
+                log_step(f"Edit button via row failed: {e}")
+
+            if not workers_ai_edit_clicked:
+                # Fallback: find all Edit buttons near Workers AI text
+                try:
+                    page.locator("text=Workers AI").first.scroll_into_view_if_needed()
+                    time.sleep(0.5)
+                    # Get all Edit buttons visible after Workers AI text
+                    all_edit_btns = page.locator("button:has-text('Edit')").all()
+                    log_step(f"Found {len(all_edit_btns)} Edit buttons total")
+                    for btn in all_edit_btns:
+                        try:
+                            if btn.is_visible():
+                                btn_box = btn.bounding_box()
+                                workers_box = page.locator("text=Workers AI").first.bounding_box()
+                                if btn_box and workers_box and abs(btn_box["y"] - workers_box["y"]) < 30:
+                                    btn.click()
+                                    time.sleep(1)
+                                    log_step("Workers AI Edit clicked via position match!")
+                                    workers_ai_edit_clicked = True
+                                    break
+                        except Exception:
+                            continue
+                except Exception as e2:
+                    log_step(f"Fallback edit click failed: {e2}")
+
+            time.sleep(1)
+
+            # Continue to summary
+            for sel in ["button:has-text('Continue to summary')", "button:has-text('Continue')", "button:has-text('Next')"]:
+                try:
+                    b = page.locator(sel).first
+                    if b.is_visible(timeout=3000):
+                        b.click()
+                        time.sleep(3)
+                        log_step("Clicked Continue to summary")
+                        break
+                except Exception:
+                    continue
+
+            # Scroll + retry Continue if not found
+            page.keyboard.press("End")
+            time.sleep(1)
+            for sel in ["button:has-text('Continue to summary')", "button:has-text('Continue')"]:
+                try:
+                    b = page.locator(sel).first
+                    if b.is_visible(timeout=2000):
+                        b.click()
+                        time.sleep(3)
+                        log_step("Clicked Continue (after scroll)")
+                        break
+                except Exception:
+                    continue
+
+            # Create Token
+            for sel in ["button:has-text('Create Token')", "button[type='submit']"]:
+                try:
+                    b = page.locator(sel).last
+                    if b.is_visible(timeout=5000):
+                        b.click()
+                        time.sleep(5)
+                        log_step("Clicked Create Token!")
+                        break
+                except Exception:
+                    continue
+
+            # Extract token from success page
+            page.screenshot(path="/tmp/cf_token_result.png")
+            log_step("Screenshot token result saved")
+
+            for sel in ["code", "input[readonly]", "input[type='text'][readonly]",
+                        "[data-testid='token-value']", ".cf-input-code",
+                        "input[class*='token']", "input[class*='code']", "input[class*='api']"]:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=4000):
+                        val = el.input_value() if "input" in sel else el.text_content()
+                        val = (val or "").strip()
+                        if val and len(val) > 10:
+                            workers_ai_token = val
+                            log_step(f"Workers AI Token berhasil! ({len(val)} chars)")
+                            break
+                except Exception:
+                    continue
+
+            # Fallback: extract token-like string from body
+            if not workers_ai_token:
+                try:
+                    body = page.inner_text("body")
+                    import re as _re
+                    tok_match = _re.search(r'\b([A-Za-z0-9_\-]{40,})\b', body)
+                    if tok_match:
+                        workers_ai_token = tok_match.group(1)
+                        log_step(f"Token dari body: {workers_ai_token[:12]}...")
+                except Exception:
+                    pass
+
+        except Exception as e:
+            log_step(f"Token creation error: {e}")
+            try:
+                page.screenshot(path="/tmp/cf_create_token_err.png")
+            except Exception:
+                pass
+
 
         # Final API key to save
         final_api_key = workers_ai_token or global_key or ""
