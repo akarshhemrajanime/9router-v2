@@ -98,6 +98,8 @@ export async function getUsageForProvider(connection, proxyOptions = null) {
       return await getLeonardoUsage(connection, proxyOptions);
     case "weavy":
       return getWeavyUsage(connection, proxyOptions);
+    case "cloudflare-ai":
+      return await getCloudflareAIUsage(connection, proxyOptions);
     default:
       return { message: `Usage API not implemented for ${provider}` };
   }
@@ -1538,3 +1540,65 @@ async function getWeavyUsage(connection, proxyOptions = null) {
 
   return { quotas };
 }
+
+/**
+ * Fetch Cloudflare Workers AI token status and return free-tier quota info.
+ * CF Workers AI free tier: 10,000 neurons/day (resets daily at midnight UTC).
+ * There's no public usage API, so we verify the token and return static quota.
+ */
+async function getCloudflareAIUsage(connection, proxyOptions = null) {
+  const { apiKey, providerSpecificData } = connection;
+  if (!apiKey) return { message: "Cloudflare AI usage unavailable: no API token" };
+
+  try {
+    // Verify token via Cloudflare token verify endpoint
+    const fetchFn = proxyOptions ? proxyAwareFetch : fetch;
+    const res = await fetchFn(
+      "https://api.cloudflare.com/client/v4/user/tokens/verify",
+      {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      },
+      proxyOptions || undefined
+    );
+
+    if (!res.ok) {
+      return { message: `Token invalid (HTTP ${res.status})` };
+    }
+
+    const data = await res.json().catch(() => ({}));
+    const tokenStatus = data?.result?.status || "unknown";
+
+    if (tokenStatus !== "active") {
+      return { message: `Token status: ${tokenStatus}` };
+    }
+
+    // Calculate next daily reset (midnight UTC)
+    const now = new Date();
+    const nextMidnightUTC = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0, 0, 0, 0
+    ));
+
+    // Free tier: 10,000 neurons/day. We don't know usage so show as full.
+    return {
+      quotas: {
+        "Workers AI": {
+          total: 10000,
+          used: 0,
+          remaining: 10000,
+          unit: "neurons",
+          resetAt: nextMidnightUTC.toISOString(),
+        },
+      },
+      plan: "Free Tier",
+    };
+  } catch (err) {
+    return { message: `Cloudflare AI usage error: ${err.message}` };
+  }
+}
+

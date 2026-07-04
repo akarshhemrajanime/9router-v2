@@ -384,6 +384,19 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
   try {
     switch (connection.provider) {
       case "cloudflare-ai": {
+        // Use token verify endpoint — no inference cost, instant response
+        const verifyRes = await fetchWithConnectionProxy(
+          "https://api.cloudflare.com/client/v4/user/tokens/verify",
+          { headers: { "Authorization": `Bearer ${connection.apiKey}`, "Content-Type": "application/json" } },
+          effectiveProxy
+        );
+        if (verifyRes.ok) {
+          const data = await verifyRes.json().catch(() => ({}));
+          const status = data?.result?.status;
+          const valid = status === "active";
+          return { valid, error: valid ? null : `Token status: ${status || "unknown"}` };
+        }
+        // Fallback: try the AI endpoint with account ID
         const psd = connection.providerSpecificData || {};
         const accountId = psd.accountId;
         if (!accountId) return { valid: false, error: "Missing Account ID" };

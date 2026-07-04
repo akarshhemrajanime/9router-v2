@@ -282,6 +282,7 @@ export const USAGE_SUPPORTED_PROVIDERS = [
   "codebuddy",
   "leonardo",
   "weavy",
+  "cloudflare-ai",
 ];
 
 // Subset that uses apikey auth (still surfaced on quota page)
@@ -291,4 +292,5 @@ export const USAGE_APIKEY_PROVIDERS = [
   "minimax",
   "minimax-cn",
   "codebuddy",
+  "cloudflare-ai",
 ];

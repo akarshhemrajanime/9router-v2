@@ -237,6 +237,22 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "cloudflare-ai":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              unit: quota.unit || "neurons",
+              // Don't forward 'remaining' — it's absolute neurons, not a percentage.
+              // getRemainingPercentage() would interpret 10000 as 10000%. Use used/total.
+            });
+          });
+        }
+        break;
+
       default:
         // Generic fallback for unknown providers
         if (data.quotas) {

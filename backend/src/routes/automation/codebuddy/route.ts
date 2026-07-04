@@ -819,7 +819,7 @@ function executeCodeBuddySignup(accountId, jobId, idx, settings) {
                 ok: true
               });
 
-              if (settings.codebuddy_auto_9router === "1" || isLeonardo || isWeavy || isKimi || isQoder) {
+              if (settings.codebuddy_auto_9router === "1" || isLeonardo || isWeavy || isKimi || isQoder || isCloudflare) {
                 try {
                   const provider = account.provider || "codebuddy";
                   const connData = {
@@ -830,7 +830,7 @@ function executeCodeBuddySignup(accountId, jobId, idx, settings) {
                     email: account.email,
                     priority: 1,
                     isActive: true,
-                    testStatus: (isLeonardo || isWeavy || isKimi || isQoder) ? "active" : "unknown",
+                    testStatus: (isLeonardo || isWeavy || isKimi || isQoder || isCloudflare) ? "active" : "unknown",
                   };
 
                   if (isLeonardo || isWeavy) {

@@ -27,6 +27,15 @@ def log_step(msg):
     emit({"step": msg})
 
 def success(api_key, account_id, email):
+    # Clean api_key — extract Bearer token if it's a curl command
+    import re as _re_clean
+    bearer_match = _re_clean.search(r'Bearer\s+([A-Za-z0-9_\-]{20,})', api_key)
+    if bearer_match:
+        api_key = bearer_match.group(1)
+    # Also match cfut_ token pattern directly
+    cfut_match = _re_clean.search(r'\b(cfut_[A-Za-z0-9_\-]{30,})\b', api_key)
+    if cfut_match:
+        api_key = cfut_match.group(1)
     emit({"status": "success", "api_key": api_key, "account_id": account_id, "email": email})
 
 def die(msg):
@@ -34,13 +43,18 @@ def die(msg):
     sys.exit(1)
 
 # ── Ammail helpers ─────────────────────────────────────────────────────────────
-def ammail_request(base_url, api_key, path, method="GET", data=None):
+def ammail_request(base_url, api_key, path, method="GET", data=None, host_header=None):
     url = base_url.rstrip("/") + "/api" + path
     req = urllib.request.Request(url, method=method)
     req.add_header("X-API-Key", api_key)
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
     req.add_header("Accept", "application/json, */*")
+    # Nginx vhost routing: tambah Host header jika base_url adalah localhost
+    if host_header:
+        req.add_header("Host", host_header)
+    elif "localhost" in base_url or "127.0.0.1" in base_url:
+        req.add_header("Host", "ammail.klipers.site")
     if data:
         req.data = json.dumps(data).encode()
     with urllib.request.urlopen(req, timeout=15) as resp:
@@ -572,6 +586,7 @@ def main():
 
     with browser_ctx as browser:
         page = browser.new_page()
+        page.set_viewport_size({"width": 1920, "height": 1080})
 
         # ── Step 1: Open Cloudflare signup ────────────────────────────────────
         log_step("Membuka halaman registrasi Cloudflare...")
@@ -914,78 +929,211 @@ def main():
 
         log_step("Membuat Workers AI API Token...")
 
-        # ── Strategy A: POST via session cookies (no browser UI needed) ───────
-        def create_token_via_session(page):
-            """Use browser session cookies to call CF API directly."""
+        # ── Strategy A: Get Global API Key → create token via CF API ────────────
+        def create_token_via_global_key(page):
+            """Navigate to API Keys page, get Global API Key, use CF API to create token."""
             import requests as _req
-            # Get cookies from browser
-            cookies_list = page.context.cookies()
-            cookies = {c['name']: c['value'] for c in cookies_list}
-            # Get csrf/x-atok-csrf token if available
-            x_csrf = cookies.get('_cf_bm', '')
-
-            base = "https://dash.cloudflare.com"
-            sess = _req.Session()
-            sess.cookies.update(cookies)
-            sess.headers.update({
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-                "Referer": f"{base}/profile/api-tokens/create",
-                "Origin": base,
-            })
-
-            # Step A1: get Workers AI permission group ID
+            log_step("Mencoba ambil Global API Key dari dashboard...")
             try:
-                r = sess.get(f"{base}/api/v4/user/tokens/permission_groups", timeout=15)
+                # Navigate to API keys page
+                page.goto("https://dash.cloudflare.com/profile/api-tokens", wait_until="domcontentloaded", timeout=20000)
+                time.sleep(2)
+
+                # Click on "Global API Key" > "View" button
+                for sel in ["button:has-text('View')", "a:has-text('View')"]:
+                    try:
+                        b = page.locator(sel).first
+                        if b.count() > 0 and b.is_visible(timeout=3000):
+                            b.click()
+                            time.sleep(2)
+                            log_step("Clicked View Global API Key")
+                            break
+                    except Exception:
+                        continue
+
+                # CF shows "Verify Your Identity" modal — click Send Verification Code → enter OTP from email
+                try:
+                    send_btn = page.locator("button:has-text('Send Verification Code')").first
+                    if send_btn.count() > 0 and send_btn.is_visible(timeout=3000):
+                        send_btn.click()
+                        time.sleep(2)
+                        log_step("Sent verification code for Global API Key")
+
+                        # Poll ammail for the OTP
+                        otp_code = None
+                        for _ in range(20):
+                            time.sleep(5)
+                            try:
+                                msgs = ammail_request(ammail_base_url, ammail_api_key,
+                                                      f"/inboxes/{urllib.parse.quote(email.split('@')[0])}/messages")
+                                for msg in (msgs if isinstance(msgs, list) else []):
+                                    if 'cloudflare' in str(msg.get('from', '')).lower() or 'cloudflare' in str(msg.get('subject', '')).lower():
+                                        mid = msg.get('id', '')
+                                        full = ammail_request(ammail_base_url, ammail_api_key, f"/messages/{urllib.parse.quote(str(mid))}")
+                                        body = str(full.get('body', '') or full.get('html', '') or full.get('text', ''))
+                                        m = re.search(r'\b(\d{6})\b', body)
+                                        if m:
+                                            otp_code = m.group(1)
+                                            log_step(f"OTP untuk Global API Key: {otp_code}")
+                                            break
+                            except Exception:
+                                pass
+                            if otp_code:
+                                break
+
+                        if otp_code:
+                            otp_input = page.locator("input[type='text'], input[placeholder*='code'], input[placeholder*='Code']").first
+                            if otp_input.count() > 0:
+                                otp_input.fill(otp_code)
+                                time.sleep(0.5)
+                                for btn_sel in ["button:has-text('Verify')", "button:has-text('Continue')", "button:has-text('Submit')", "button[type='submit']"]:
+                                    try:
+                                        b = page.locator(btn_sel).first
+                                        if b.count() > 0:
+                                            b.click()
+                                            time.sleep(3)
+                                            log_step(f"Entered OTP, clicked {btn_sel}")
+                                            break
+                                    except Exception:
+                                        continue
+                except Exception as e:
+                    log_step(f"OTP verify step: {e}")
+
+                # CF shows a password confirmation dialog after OTP
+                try:
+                    pwd_input = page.locator("input[type='password']").first
+                    if pwd_input.is_visible(timeout=3000):
+                        pwd_input.fill(password)
+                        time.sleep(0.5)
+                        for btn_sel in ["button:has-text('Continue')", "button[type='submit']", "button:has-text('View')"]:
+                            try:
+                                b = page.locator(btn_sel).first
+                                if b.count() > 0:
+                                    b.click()
+                                    time.sleep(2)
+                                    log_step("Submitted password for Global API Key")
+                                    break
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
+                # Extract Global API Key value
+                global_key = None
+                page.screenshot(path="/tmp/cf_globalkey_page.png")
+                body_text = page.inner_text("body")
+                # CF global key is 37 chars hex-ish
+                import re as _re2
+                gk_match = _re2.search(r'\b([a-f0-9]{37})\b', body_text)
+                if gk_match:
+                    global_key = gk_match.group(1)
+                    log_step(f"Global API Key (from body): {global_key[:8]}...")
+
+                if not global_key:
+                    for sel in ["input[readonly]", "code", "[class*='api-key']", "input[type='text']"]:
+                        try:
+                            el = page.locator(sel).first
+                            if el.count() > 0 and el.is_visible(timeout=2000):
+                                val = el.input_value() if "input" in sel else el.text_content()
+                                val = (val or "").strip()
+                                if val and len(val) > 20 and ' ' not in val:
+                                    global_key = val
+                                    log_step(f"Global API Key: {val[:8]}...")
+                                    break
+                        except Exception:
+                            continue
+
+                if not global_key:
+                    log_step("Global API Key tidak ditemukan")
+                    return None
+
+                # Use Global API Key to create Workers AI token via CF API
+                api_email_header = email  # email dari outer scope
+                headers = {
+                    "X-Auth-Email": api_email_header,
+                    "X-Auth-Key": global_key,
+                    "Content-Type": "application/json",
+                }
+                base_api = "https://api.cloudflare.com/client/v4"
+
+                # Get Workers AI permission group ID
+                r = _req.get(f"{base_api}/user/tokens/permission_groups", headers=headers, timeout=15)
                 pg_data = r.json()
                 workers_ai_id = None
                 for pg in pg_data.get('result', []):
-                    name = pg.get('name', '')
-                    if 'Workers AI' in name and 'Read' in name:
+                    if 'Workers AI' in pg.get('name', ''):
                         workers_ai_id = pg['id']
-                        log_step(f"Workers AI permission group: {pg['name']} id={pg['id']}")
+                        log_step(f"Workers AI permission group id: {workers_ai_id}")
                         break
+
                 if not workers_ai_id:
-                    # Try Workers AI:Edit
-                    for pg in pg_data.get('result', []):
-                        if 'Workers AI' in pg.get('name', ''):
-                            workers_ai_id = pg['id']
-                            log_step(f"Workers AI fallback: {pg['name']} id={pg['id']}")
-                            break
-            except Exception as e:
-                log_step(f"Permission groups fetch failed: {e}")
-                return None
+                    log_step(f"Workers AI group not found. Available: {[p['name'] for p in pg_data.get('result', [])[:10]]}")
+                    return None
 
-            if not workers_ai_id:
-                log_step("Workers AI permission group not found")
-                return None
-
-            # Step A2: POST create token
-            payload = {
-                "name": "9router-workers-ai",
-                "policies": [{
-                    "effect": "allow",
-                    "resources": {f"com.cloudflare.api.account.{account_id}": "*"},
-                    "permission_groups": [{"id": workers_ai_id}]
-                }]
-            }
-            try:
-                r2 = sess.post(f"{base}/api/v4/user/tokens", json=payload, timeout=15)
+                # Create the scoped token
+                payload = {
+                    "name": "9router-workers-ai",
+                    "policies": [{
+                        "effect": "allow",
+                        "resources": {f"com.cloudflare.api.account.{account_id}": "*"},
+                        "permission_groups": [{"id": workers_ai_id}]
+                    }]
+                }
+                r2 = _req.post(f"{base_api}/user/tokens", json=payload, headers=headers, timeout=15)
                 resp2 = r2.json()
-                log_step(f"Token create response: {str(resp2)[:200]}")
+                log_step(f"Token create via Global Key: {str(resp2)[:200]}")
                 if resp2.get('success'):
-                    token_val = resp2['result'].get('value', '')
-                    if token_val:
-                        return token_val
+                    return resp2['result'].get('value')
             except Exception as e:
-                log_step(f"Token POST failed: {e}")
+                log_step(f"Global API Key approach failed: {e}")
+            return None
+
+        def create_token_via_session(page):
+            """Fallback: browser JS fetch with proper headers."""
+            log_step("Mencoba buat token via browser fetch API...")
+            try:
+                result = page.evaluate(f"""
+                    async () => {{
+                        const pgResp = await fetch('https://dash.cloudflare.com/api/v4/user/tokens/permission_groups', {{
+                            credentials: 'include',
+                            headers: {{'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}}
+                        }});
+                        const pgText = await pgResp.text();
+                        let pgData;
+                        try {{ pgData = JSON.parse(pgText); }} catch(e) {{ return {{error: 'non-json: ' + pgText.slice(0,100)}}; }}
+                        const groups = pgData.result || [];
+                        let workersAiId = groups.find(g => g.name && g.name.includes('Workers AI'))?.id;
+                        if (!workersAiId) return {{error: 'no Workers AI group', groups: groups.map(g=>g.name).slice(0,10)}};
+                        const tokenResp = await fetch('https://dash.cloudflare.com/api/v4/user/tokens', {{
+                            method: 'POST', credentials: 'include',
+                            headers: {{'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}},
+                            body: JSON.stringify({{name:'9router-workers-ai',policies:[{{effect:'allow',resources:{{'com.cloudflare.api.account.{account_id}':'*'}},permission_groups:[{{id:workersAiId}}]}}]}})
+                        }});
+                        const tokenData = await tokenResp.json();
+                        return {{success: tokenData.success, value: tokenData.result?.value, error: tokenData.errors?.[0]?.message}};
+                    }}
+                """)
+                log_step(f"Browser fetch result: {str(result)[:300]}")
+                if result and result.get('value'):
+                    return result['value']
+            except Exception as e:
+                log_step(f"Browser fetch exception: {e}")
             return None
 
         try:
-            workers_ai_token = create_token_via_session(page)
+            workers_ai_token = create_token_via_global_key(page)
             if workers_ai_token:
-                log_step(f"Token via session API: {workers_ai_token[:12]}...")
+                log_step(f"Token via Global API Key: {workers_ai_token[:12]}...")
         except Exception as e:
-            log_step(f"Session API token failed: {e}")
+            log_step(f"Global key token failed: {e}")
+
+        if not workers_ai_token:
+            try:
+                workers_ai_token = create_token_via_session(page)
+                if workers_ai_token:
+                    log_step(f"Token via session fetch: {workers_ai_token[:12]}...")
+            except Exception as e:
+                log_step(f"Session API token failed: {e}")
 
         # ── Strategy B: Browser UI — /profile/api-tokens/create (dropdown form)
         if not workers_ai_token:
@@ -1032,159 +1180,309 @@ def main():
         if not account_id:
             die("Tidak bisa membuat API Token: account_id tidak ditemukan")
 
-        # ── Step 10: Buat Workers AI Token via Account API Tokens page ────────
+        # ── Step 10: Create Workers AI Token — proper CF UI flow ──────────────
         log_step("Membuat Workers AI API Token via browser...")
         try:
-            create_url = f"https://dash.cloudflare.com/{account_id}/api-tokens/create"
-            page.goto(create_url, wait_until="domcontentloaded", timeout=25000)
+            # 1. Navigate to profile/api-tokens (not account-specific)
+            page.goto("https://dash.cloudflare.com/profile/api-tokens", wait_until="domcontentloaded", timeout=25000)
             wait_for_cf_clearance(page, timeout=15)
-            time.sleep(4)
-            log_step(f"Halaman create token terbuka: {page.url}")
+            time.sleep(3)
+            log_step(f"API Tokens page: {page.url}")
+            page.screenshot(path="/tmp/cf_tokens_page.png")
 
-            # Token name
-            name_input = page.locator("input[placeholder*='Token name'], input[name*='name'], input[aria-label*='Token name']").first
-            if name_input.is_visible(timeout=4000):
-                name_input.fill("9router-workers-ai")
-                log_step("Token name filled")
-                time.sleep(0.5)
+            # 2. Click "+ Create Token" button
+            for sel in ["button:has-text('Create Token')", "a:has-text('Create Token')", "[href*='create']"]:
+                try:
+                    b = page.locator(sel).first
+                    if b.count() > 0 and b.is_visible(timeout=3000):
+                        b.click()
+                        time.sleep(2)
+                        log_step(f"Clicked Create Token via: {sel}")
+                        break
+                except Exception:
+                    continue
 
-            # Use search box to filter to "Workers AI" directly — avoids scrolling
-            search_filled = False
+            time.sleep(2)
+            page.screenshot(path="/tmp/cf_create_token_page.png")
+            log_step(f"After Create Token click: {page.url}")
+
+            # 3. Click "Get started" for Custom Token
+            for sel in ["button:has-text('Get started')", "a:has-text('Get started')"]:
+                try:
+                    b = page.locator(sel).first
+                    if b.count() > 0 and b.is_visible(timeout=3000):
+                        b.click()
+                        time.sleep(2)
+                        log_step(f"Clicked Get started via: {sel}")
+                        break
+                except Exception:
+                    continue
+
+            time.sleep(2)
+            page.screenshot(path="/tmp/cf_custom_token_form.png")
+            log_step(f"Custom token form: {page.url}")
+
+            # 4. Fill Token name
+            name_input = page.locator("input").first
+            for name_sel in ["input[placeholder*='name' i]", "input[name*='name' i]", "input[aria-label*='name' i]", "input:first-of-type"]:
+                try:
+                    el = page.locator(name_sel).first
+                    if el.count() > 0 and el.is_visible(timeout=2000):
+                        el.click()
+                        el.fill("9router-workers-ai")
+                        time.sleep(0.5)
+                        log_step("Token name filled: 9router-workers-ai")
+                        break
+                except Exception:
+                    continue
+
+            # 5. Select Workers AI permission from dropdown
+            # The form has 3 dropdowns in Permissions row: [Account] [Select/search] [Select...]
+            # Click the second dropdown (searchable), type "Workers AI", click "Workers AI"
+            time.sleep(1)
+
+            workers_ai_permission_set = False
+
+            # Strategy A: click the second select in the permissions row
             try:
-                search_box = page.locator("input[placeholder*='Search'], input[placeholder*='permission']").first
-                if search_box.is_visible(timeout=3000):
-                    search_box.fill("Workers AI")
-                    time.sleep(2)
-                    search_filled = True
-                    log_step("Search box filled: Workers AI")
+                # Find all select-like elements (combobox/select)
+                perm_dropdowns = page.locator("select, [role='combobox'], [role='listbox']").all()
+                log_step(f"Found {len(perm_dropdowns)} dropdowns")
+
+                # The second dropdown in the permissions row is for permission type
+                # Try typing in a searchable dropdown
+                for sel in [
+                    "[class*='select'] input",
+                    "input[role='combobox']",
+                    "input[aria-autocomplete]",
+                    "[aria-label*='permission' i] input",
+                    "[placeholder*='Select' i]",
+                ]:
+                    try:
+                        els = page.locator(sel).all()
+                        for el in els:
+                            if el.is_visible():
+                                el.click()
+                                time.sleep(0.5)
+                                el.fill("Workers AI")
+                                time.sleep(1)
+                                # Click on "Workers AI" option in dropdown
+                                wa_opt = page.locator("text=Workers AI").first
+                                if wa_opt.count() > 0 and wa_opt.is_visible(timeout=2000):
+                                    wa_opt.click()
+                                    time.sleep(0.5)
+                                    log_step(f"Workers AI selected via: {sel}")
+                                    workers_ai_permission_set = True
+                                    break
+                        if workers_ai_permission_set:
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                log_step(f"Dropdown strategy A: {e}")
+
+            # Strategy B: use keyboard Tab to navigate to permission select, type Workers AI
+            if not workers_ai_permission_set:
+                try:
+                    # Find native <select> elements
+                    selects = page.locator("select").all()
+                    log_step(f"Native selects: {len(selects)}")
+                    for i, sel_el in enumerate(selects):
+                        try:
+                            opts = sel_el.evaluate("el => Array.from(el.options).map(o => o.text)")
+                            log_step(f"Select {i} options: {opts[:5]}")
+                            if any('Workers AI' in o for o in opts):
+                                sel_el.select_option(label="Workers AI")
+                                time.sleep(0.5)
+                                log_step(f"Workers AI selected via native select {i}")
+                                workers_ai_permission_set = True
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    log_step(f"Strategy B selects: {e}")
+
+            # Strategy C: JS evaluate — find the select with Workers AI and set it
+            if not workers_ai_permission_set:
+                try:
+                    result = page.evaluate("""
+                        () => {
+                            // Find all select elements
+                            const selects = Array.from(document.querySelectorAll('select'));
+                            for (const sel of selects) {
+                                const opts = Array.from(sel.options);
+                                const waOpt = opts.find(o => o.text.trim() === 'Workers AI');
+                                if (waOpt) {
+                                    sel.value = waOpt.value;
+                                    sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                    return 'Workers AI set on select: ' + (sel.name || sel.id || 'unnamed');
+                                }
+                            }
+                            return 'Workers AI option not found in any select';
+                        }
+                    """)
+                    log_step(f"JS select: {result}")
+                    if 'Workers AI set' in str(result):
+                        workers_ai_permission_set = True
+                        time.sleep(0.5)
+                except Exception as e:
+                    log_step(f"Strategy C JS: {e}")
+
+            page.screenshot(path="/tmp/cf_after_perm_select.png")
+            log_step(f"After permission selection (set={workers_ai_permission_set})")
+            time.sleep(1)
+
+            # 5b. Select "Read" from the third dropdown (React custom dropdown)
+            # The "Select..." dropdown is a React custom dropdown — need to click it first
+            read_set = False
+            time.sleep(0.5)
+
+            # Strategy: click the "Select..." dropdown button, then click "Read"
+            try:
+                # Find the "Select..." placeholder dropdown and click it
+                for sel in [
+                    "button:has-text('Select...')",
+                    "[class*='select']:has-text('Select...')",
+                    "div[class*='control']:has-text('Select...')",
+                    "*:has-text('Select...')",
+                ]:
+                    try:
+                        el = page.locator(sel).last  # use .last since "Select" appears in many places
+                        if el.count() > 0 and el.is_visible(timeout=2000):
+                            el.click()
+                            time.sleep(1)
+                            log_step(f"Clicked 'Select...' via: {sel}")
+                            # Now click "Read" from the opened dropdown
+                            for read_sel in ["text='Read'", "[role='option']:has-text('Read')", "li:has-text('Read')"]:
+                                try:
+                                    r = page.locator(read_sel).first
+                                    if r.count() > 0 and r.is_visible(timeout=2000):
+                                        r.click()
+                                        time.sleep(0.5)
+                                        log_step(f"Read selected via: {read_sel}")
+                                        read_set = True
+                                        break
+                                except Exception:
+                                    continue
+                            if read_set:
+                                break
+                    except Exception:
+                        continue
+            except Exception as e:
+                log_step(f"Read dropdown click: {e}")
+
+            # Strategy B: use bounding box — the "Select..." is the 3rd dropdown, find by position
+            if not read_set:
+                try:
+                    # Workers AI dropdown bbox → the Select... is to its right
+                    wa_loc = page.locator("*:has-text('Workers AI')").first
+                    wa_box = wa_loc.bounding_box()
+                    if wa_box:
+                        # "Select..." dropdown is to the right of Workers AI
+                        select_x = wa_box['x'] + wa_box['width'] + 120  # offset right
+                        select_y = wa_box['y'] + wa_box['height'] / 2
+                        page.mouse.click(select_x, select_y)
+                        time.sleep(1)
+                        log_step(f"Clicked Select... at estimated position ({select_x:.0f},{select_y:.0f})")
+                        page.screenshot(path="/tmp/cf_after_select_click.png")
+                        # Find Read option
+                        for read_sel in ["text='Read'", "[role='option']:has-text('Read')", "li:has-text('Read')"]:
+                            try:
+                                r = page.locator(read_sel).first
+                                if r.count() > 0 and r.is_visible(timeout=2000):
+                                    r.click()
+                                    time.sleep(0.5)
+                                    log_step(f"Read selected (positional) via: {read_sel}")
+                                    read_set = True
+                                    break
+                            except Exception:
+                                continue
+                except Exception as e:
+                    log_step(f"Read positional: {e}")
+
+            log_step(f"Read access level set: {read_set}")
+            page.screenshot(path="/tmp/cf_after_read_select.png")
+
+            # Log all form inputs/selects for debugging
+            try:
+                form_state = page.evaluate("""
+                    () => {
+                        const inputs = Array.from(document.querySelectorAll('input, select, textarea'));
+                        return inputs.map(el => ({
+                            tag: el.tagName, type: el.type, name: el.name,
+                            value: el.value, placeholder: el.placeholder
+                        })).filter(el => el.value || el.placeholder);
+                    }
+                """)
+                log_step(f"Form state: {str(form_state)[:500]}")
             except Exception:
                 pass
 
-            if not search_filled:
-                # Fallback: expand AI & Machine Learning section then scroll
+            # 6. Scroll down and click "Continue to summary"
+            time.sleep(1)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(1)
+            page.screenshot(path="/tmp/cf_before_continue.png")
+
+            continue_clicked = False
+            for sel in [
+                "button:has-text('Continue to summary')",
+                "input[value*='Continue']",
+                "button:has-text('Continue')",
+                "button:has-text('Review')",
+                "button[type='submit']",
+            ]:
                 try:
-                    el = page.locator("text=AI & Machine Learning").first
-                    if el.is_visible(timeout=4000):
-                        el.click()
-                        time.sleep(2)
-                        log_step("AI & Machine Learning section expanded")
-                except Exception:
-                    pass
-
-            # Click "Edit" for Workers AI row using multiple strategies
-            workers_ai_edit_clicked = False
-
-            # Strategy 1: JS evaluate — find element with "Edit" text near "Workers AI"
-            try:
-                clicked = page.evaluate("""
-                    () => {
-                        // Find all elements that contain ONLY "Edit" text
-                        const allEls = document.querySelectorAll('button, [role="button"], span, div');
-                        const workersAiEls = document.querySelectorAll('*');
-                        // Find Workers AI text node
-                        let workersAiEl = null;
-                        for (const el of workersAiEls) {
-                            if (el.children.length === 0 && el.textContent.trim() === 'Workers AI') {
-                                workersAiEl = el;
-                                break;
-                            }
-                        }
-                        if (!workersAiEl) return false;
-                        const waRect = workersAiEl.getBoundingClientRect();
-                        // Find clickable "Edit" elements in same Y range
-                        for (const el of allEls) {
-                            if (el.textContent.trim() === 'Edit') {
-                                const rect = el.getBoundingClientRect();
-                                if (Math.abs(rect.y - waRect.y) < 40 && rect.width > 0) {
-                                    el.click();
-                                    return true;
-                                }
-                            }
-                        }
-                        return false;
-                    }
-                """)
-                if clicked:
-                    log_step("Workers AI Edit clicked via JS!")
-                    workers_ai_edit_clicked = True
-            except Exception as e:
-                log_step(f"JS click failed: {e}")
-
-            # Strategy 2: scroll Workers AI into view, then find Edit nearby
-            if not workers_ai_edit_clicked:
-                try:
-                    page.locator("text=Workers AI").last.scroll_into_view_if_needed()
-                    time.sleep(1)
-                    # Try any clickable element with text "Edit"
-                    for sel in [
-                        "[role='button']:has-text('Edit')",
-                        "span:has-text('Edit')",
-                        "div:has-text('Edit')",
-                        "a:has-text('Edit')",
-                        "text='Edit'",
-                    ]:
-                        try:
-                            els = page.locator(sel).all()
-                            for el in els:
-                                if el.is_visible():
-                                    el.click()
-                                    time.sleep(0.5)
-                                    workers_ai_edit_clicked = True
-                                    log_step(f"Edit clicked via: {sel}")
-                                    break
-                        except Exception:
-                            continue
-                        if workers_ai_edit_clicked:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible(timeout=3000):
+                        loc.scroll_into_view_if_needed()
+                        time.sleep(0.3)
+                        url_before = page.url
+                        bbox = loc.bounding_box()
+                        if bbox:
+                            page.mouse.move(bbox['x'] + bbox['width']/2, bbox['y'] + bbox['height']/2)
+                            time.sleep(0.2)
+                            page.mouse.click(bbox['x'] + bbox['width']/2, bbox['y'] + bbox['height']/2)
+                            log_step(f"Mouse.click Continue via: {sel}")
+                        else:
+                            loc.click()
+                        time.sleep(3)
+                        page.screenshot(path="/tmp/cf_after_continue.png")
+                        if page.url != url_before:
+                            log_step(f"Navigated to summary: {page.url[:60]}")
+                            continue_clicked = True
                             break
-                except Exception as e2:
-                    log_step(f"Scroll+click failed: {e2}")
-
-            page.screenshot(path="/tmp/cf_after_edit_click.png")
-            log_step("Screenshot after Edit click")
-
-
-
-            time.sleep(1)
-
-            # Continue to summary
-            for sel in ["button:has-text('Continue to summary')", "button:has-text('Continue')", "button:has-text('Next')"]:
-                try:
-                    b = page.locator(sel).first
-                    if b.is_visible(timeout=3000):
-                        b.click()
-                        time.sleep(3)
-                        log_step("Clicked Continue to summary")
-                        break
-                except Exception:
+                        log_step(f"'{sel}' clicked but URL unchanged")
+                        # Check error message
+                        try:
+                            err = page.evaluate("Array.from(document.querySelectorAll('[class*=error],[class*=alert],[role=alert]')).map(e=>e.innerText).join(' ')")
+                            if err:
+                                log_step(f"Form error after continue: {err[:200]}")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    log_step(f"Continue selector '{sel}' failed: {e}")
                     continue
 
-            # Scroll + retry Continue if not found
-            page.keyboard.press("End")
-            time.sleep(1)
-            for sel in ["button:has-text('Continue to summary')", "button:has-text('Continue')"]:
+            log_step(f"Continue to summary: {continue_clicked}")
+
+            # 7. On summary page, click "Create Token"
+            time.sleep(2)
+            page.screenshot(path="/tmp/cf_summary_page.png")
+            for sel in ["button:has-text('Create Token')", "input[value*='Create Token']", "button[type='submit']"]:
                 try:
                     b = page.locator(sel).first
-                    if b.is_visible(timeout=2000):
-                        b.click()
-                        time.sleep(3)
-                        log_step("Clicked Continue (after scroll)")
-                        break
-                except Exception:
-                    continue
-
-            # Create Token
-            for sel in ["button:has-text('Create Token')", "button[type='submit']"]:
-                try:
-                    b = page.locator(sel).last
-                    if b.is_visible(timeout=5000):
+                    if b.count() > 0 and b.is_visible(timeout=5000):
+                        b.scroll_into_view_if_needed()
+                        time.sleep(0.3)
                         b.click()
                         time.sleep(5)
-                        log_step("Clicked Create Token!")
+                        log_step(f"Create Token clicked via: {sel}")
                         break
                 except Exception:
                     continue
 
-            # Extract token from success page
+            # 8. Extract token from result page
             page.screenshot(path="/tmp/cf_token_result.png")
             log_step("Screenshot token result saved")
 
@@ -1198,20 +1496,23 @@ def main():
                         val = (val or "").strip()
                         if val and len(val) > 10:
                             workers_ai_token = val
-                            log_step(f"Workers AI Token berhasil! ({len(val)} chars)")
+                            log_step(f"Workers AI Token berhasil! ({len(val)} chars): {val[:12]}...")
                             break
                 except Exception:
                     continue
 
-            # Fallback: extract token-like string from body
+            # Fallback: extract token-like string from body (cfp_ or similar)
             if not workers_ai_token:
                 try:
                     body = page.inner_text("body")
                     import re as _re
-                    tok_match = _re.search(r'\b([A-Za-z0-9_\-]{40,})\b', body)
-                    if tok_match:
-                        workers_ai_token = tok_match.group(1)
-                        log_step(f"Token dari body: {workers_ai_token[:12]}...")
+                    # CF tokens start with cfut_ or similar
+                    for pattern in [r'\b(cfut_[A-Za-z0-9_\-]{30,})\b', r'\b([A-Za-z0-9_\-]{40,})\b']:
+                        tok_match = _re.search(pattern, body)
+                        if tok_match:
+                            workers_ai_token = tok_match.group(1)
+                            log_step(f"Token dari body: {workers_ai_token[:12]}...")
+                            break
                 except Exception:
                     pass
 
