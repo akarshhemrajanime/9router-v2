@@ -932,56 +932,101 @@ def main():
                 log_step("Token name filled")
                 time.sleep(0.5)
 
-            # Expand "AI & Machine Learning" section
-            for sel in ["text=AI & Machine Learning"]:
+            # Use search box to filter to "Workers AI" directly — avoids scrolling
+            search_filled = False
+            try:
+                search_box = page.locator("input[placeholder*='Search'], input[placeholder*='permission']").first
+                if search_box.is_visible(timeout=3000):
+                    search_box.fill("Workers AI")
+                    time.sleep(2)
+                    search_filled = True
+                    log_step("Search box filled: Workers AI")
+            except Exception:
+                pass
+
+            if not search_filled:
+                # Fallback: expand AI & Machine Learning section then scroll
                 try:
-                    el = page.locator(sel).first
+                    el = page.locator("text=AI & Machine Learning").first
                     if el.is_visible(timeout=4000):
                         el.click()
                         time.sleep(2)
                         log_step("AI & Machine Learning section expanded")
-                        break
                 except Exception:
-                    continue
+                    pass
 
-            # Click "Edit" button specifically in the Workers AI row
-            # The row contains "Workers AI" text and has Read/Edit buttons
+            # Click "Edit" for Workers AI row using multiple strategies
             workers_ai_edit_clicked = False
+
+            # Strategy 1: JS evaluate — find element with "Edit" text near "Workers AI"
             try:
-                # Find row containing "Workers AI", then click its Edit button
-                row = page.locator("tr:has-text('Workers AI'), div:has-text('Workers AI')").last
-                edit_btn = row.locator("button:has-text('Edit')").first
-                if edit_btn.is_visible(timeout=3000):
-                    edit_btn.click()
-                    time.sleep(1)
-                    log_step("Workers AI: Edit permission clicked!")
+                clicked = page.evaluate("""
+                    () => {
+                        // Find all elements that contain ONLY "Edit" text
+                        const allEls = document.querySelectorAll('button, [role="button"], span, div');
+                        const workersAiEls = document.querySelectorAll('*');
+                        // Find Workers AI text node
+                        let workersAiEl = null;
+                        for (const el of workersAiEls) {
+                            if (el.children.length === 0 && el.textContent.trim() === 'Workers AI') {
+                                workersAiEl = el;
+                                break;
+                            }
+                        }
+                        if (!workersAiEl) return false;
+                        const waRect = workersAiEl.getBoundingClientRect();
+                        // Find clickable "Edit" elements in same Y range
+                        for (const el of allEls) {
+                            if (el.textContent.trim() === 'Edit') {
+                                const rect = el.getBoundingClientRect();
+                                if (Math.abs(rect.y - waRect.y) < 40 && rect.width > 0) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                if clicked:
+                    log_step("Workers AI Edit clicked via JS!")
                     workers_ai_edit_clicked = True
             except Exception as e:
-                log_step(f"Edit button via row failed: {e}")
+                log_step(f"JS click failed: {e}")
 
+            # Strategy 2: scroll Workers AI into view, then find Edit nearby
             if not workers_ai_edit_clicked:
-                # Fallback: find all Edit buttons near Workers AI text
                 try:
-                    page.locator("text=Workers AI").first.scroll_into_view_if_needed()
-                    time.sleep(0.5)
-                    # Get all Edit buttons visible after Workers AI text
-                    all_edit_btns = page.locator("button:has-text('Edit')").all()
-                    log_step(f"Found {len(all_edit_btns)} Edit buttons total")
-                    for btn in all_edit_btns:
+                    page.locator("text=Workers AI").last.scroll_into_view_if_needed()
+                    time.sleep(1)
+                    # Try any clickable element with text "Edit"
+                    for sel in [
+                        "[role='button']:has-text('Edit')",
+                        "span:has-text('Edit')",
+                        "div:has-text('Edit')",
+                        "a:has-text('Edit')",
+                        "text='Edit'",
+                    ]:
                         try:
-                            if btn.is_visible():
-                                btn_box = btn.bounding_box()
-                                workers_box = page.locator("text=Workers AI").first.bounding_box()
-                                if btn_box and workers_box and abs(btn_box["y"] - workers_box["y"]) < 30:
-                                    btn.click()
-                                    time.sleep(1)
-                                    log_step("Workers AI Edit clicked via position match!")
+                            els = page.locator(sel).all()
+                            for el in els:
+                                if el.is_visible():
+                                    el.click()
+                                    time.sleep(0.5)
                                     workers_ai_edit_clicked = True
+                                    log_step(f"Edit clicked via: {sel}")
                                     break
                         except Exception:
                             continue
+                        if workers_ai_edit_clicked:
+                            break
                 except Exception as e2:
-                    log_step(f"Fallback edit click failed: {e2}")
+                    log_step(f"Scroll+click failed: {e2}")
+
+            page.screenshot(path="/tmp/cf_after_edit_click.png")
+            log_step("Screenshot after Edit click")
+
+
 
             time.sleep(1)
 
