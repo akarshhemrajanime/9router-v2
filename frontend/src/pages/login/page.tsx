@@ -56,7 +56,11 @@ export default function LoginPage() {
 
         if (res.ok) {
           const data = await res.json();
-          if (data.requireLogin === false) {
+          
+          const params = new URLSearchParams(window.location.search);
+          const isForced = params.get("force") === "true" || params.get("force") === "1";
+
+          if (data.requireLogin === false && !isForced) {
             // Fix: set this to preventRequireAuth redirection loop
             localStorage.setItem("9r_authed", "1");
             navigate("/dashboard");

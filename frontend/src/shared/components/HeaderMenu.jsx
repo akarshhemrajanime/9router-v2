@@ -107,7 +107,7 @@ export default function HeaderMenu({ onLogout, isLoggedIn = true }) {
               <MenuItem
                 icon="login"
                 label="Login"
-                onClick={() => { close(); window.location.href = "/login"; }}
+                onClick={() => { close(); window.location.href = "/login?force=true"; }}
               />
             )}
           </div>
