@@ -7,13 +7,13 @@ const sampleTestimonials: Testimonial[] = [
     avatarSrc: "",
     name: "Klipers AI",
     handle: "@klipers.pro",
-    text: "High-performance AI model provider. Try out advanced text generation, images, and audio workflows."
+    text: "Potong video YouTube jadi shorts viral otomatis pake AI. Tempel link, langsung jadi konten!"
   },
   {
     avatarSrc: "",
-    name: "AM Stream",
+    name: "AMSTREAM",
     handle: "@amstream.pro",
-    text: "Enterprise-grade media proxy and LLM endpoint load balancing. Scale your infrastructure dynamically."
+    text: "Platform live streaming profesional. Multi-stream video ke YouTube, Facebook, Twitch secara bersamaan dengan satu klik."
   },
   {
     avatarSrc: "",
