@@ -1271,35 +1271,37 @@ def main():
                                 all_frame_urls = [f.url[:80] for f in page.frames if f.url and f.url != 'about:blank']
                                 log_step(f"GAK modal frames: {all_frame_urls}")
 
-                                # Solve Turnstile in GAK modal — frame is at challenges.cloudflare.com
+                                # Solve Turnstile in GAK modal using frame_locator
                                 page.screenshot(path="/tmp/cf_gak_before_ts.png")
                                 _ts_clicked = False
-                                for _ts_attempt in range(5):
+                                try:
+                                    # Use frame_locator — correct Playwright API for iframe interaction
+                                    fl = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
+                                    cb = fl.locator("input[type='checkbox']")
+                                    log_step(f"GAK TS via frame_locator: count={cb.count()}")
+                                    if cb.count() > 0:
+                                        cb.click(timeout=8000)
+                                        time.sleep(10)  # Wait for Camoufox auto-solve
+                                        log_step("GAK Turnstile clicked via frame_locator")
+                                        _ts_clicked = True
+                                except Exception as _fle:
+                                    log_step(f"GAK frame_locator error: {_fle}")
+
+                                if not _ts_clicked:
+                                    # Fallback: click via page coordinates (checkbox ~545,432 from screenshot)
                                     try:
-                                        ts_frames = [f for f in page.frames if 'challenges.cloudflare.com' in (f.url or '')]
-                                        log_step(f"GAK Turnstile frames: {len(ts_frames)}")
-                                        for _f in ts_frames:
-                                            try:
-                                                # Try both input[type=checkbox] and label
-                                                cb = _f.locator("input[type='checkbox'], label, .ctp-checkbox-label")
-                                                if cb.count() > 0:
-                                                    try:
-                                                        cb.first.click(timeout=5000)
-                                                        time.sleep(3)
-                                                        log_step(f"GAK Turnstile checkbox clicked (frame {_f.url[-30:]})")
-                                                        _ts_clicked = True
-                                                        break
-                                                    except Exception as _ce:
-                                                        log_step(f"GAK TS click error: {_ce}")
-                                            except Exception:
-                                                pass
-                                        if _ts_clicked:
-                                            # Wait for auto-solve
-                                            time.sleep(8)
-                                            break
-                                    except Exception:
-                                        pass
-                                    time.sleep(2)
+                                        ts_iframe = page.locator("iframe[src*='challenges.cloudflare.com']")
+                                        if ts_iframe.count() > 0:
+                                            bb = ts_iframe.bounding_box()
+                                            if bb:
+                                                cx = bb['x'] + bb['width'] * 0.15  # left side = checkbox
+                                                cy = bb['y'] + bb['height'] * 0.5
+                                                page.mouse.click(cx, cy)
+                                                time.sleep(10)
+                                                log_step(f"GAK Turnstile mouse click at ({cx:.0f},{cy:.0f})")
+                                                _ts_clicked = True
+                                    except Exception as _me:
+                                        log_step(f"GAK mouse click error: {_me}")
 
                                 page.screenshot(path="/tmp/cf_gak_before_submit.png")
 
