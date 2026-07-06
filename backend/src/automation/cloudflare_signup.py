@@ -939,6 +939,10 @@ def main():
         log_step("Membuat Workers AI API Token...")
 
         # ── Strategy A: Get Global API Key → create token via CF API ────────────
+        # Capture ammail vars into local scope for nested function closure
+        _ammail_base_url = args.ammail_base_url or ""
+        _ammail_api_key = args.ammail_api_key or ""
+
         def create_token_via_global_key(page):
             """Navigate to API Keys page, get Global API Key, use CF API to create token."""
             import requests as _req
@@ -973,14 +977,14 @@ def main():
                         for _ in range(20):
                             time.sleep(5)
                             try:
-                                msgs_resp = ammail_request(ammail_base_url, ammail_api_key,
+                                msgs_resp = ammail_request(_ammail_base_url, _ammail_api_key,
                                                       f"/inboxes/{urllib.parse.quote(email.split('@')[0])}/messages")
                                 # ammail_request returns dict {"messages": [...]} not a list directly
                                 msgs_list = msgs_resp.get("messages", []) if isinstance(msgs_resp, dict) else (msgs_resp if isinstance(msgs_resp, list) else [])
                                 for msg in msgs_list:
                                     if 'cloudflare' in str(msg.get('from', '')).lower() or 'cloudflare' in str(msg.get('subject', '')).lower():
                                         mid = msg.get('id', '')
-                                        full = ammail_request(ammail_base_url, ammail_api_key, f"/messages/{urllib.parse.quote(str(mid))}")
+                                        full = ammail_request(_ammail_base_url, _ammail_api_key, f"/messages/{urllib.parse.quote(str(mid))}")
                                         msg_body = full.get("message", full) if isinstance(full, dict) else {}
                                         body = str(msg_body.get('body', '') or msg_body.get('html', '') or msg_body.get('text', '') or full.get('body', '') or full.get('html', '') or full.get('text', ''))
                                         m = re.search(r'\b(\d{6})\b', body)
@@ -1160,24 +1164,17 @@ def main():
                 log_step(f"Playwright request exception: {e}")
             return None
 
+        # Try session API first (fast, no OTP needed)
         try:
-            workers_ai_token = create_token_via_global_key(page)
+            workers_ai_token = create_token_via_session(page)
             if workers_ai_token:
-                log_step(f"Token via Global API Key: {workers_ai_token[:12]}...")
+                log_step(f"Token via session fetch: {workers_ai_token[:12]}...")
         except Exception as e:
-            log_step(f"Global key token failed: {e}")
-
-        if not workers_ai_token:
-            try:
-                workers_ai_token = create_token_via_session(page)
-                if workers_ai_token:
-                    log_step(f"Token via session fetch: {workers_ai_token[:12]}...")
-            except Exception as e:
-                log_step(f"Session API token failed: {e}")
+            log_step(f"Session API token failed: {e}")
 
         # ── Strategy B: Browser UI — /profile/api-tokens/create (dropdown form)
         if not workers_ai_token:
-            log_step("Fallback: browser UI token creation")
+            log_step("Trying browser UI token creation")
             for create_url in [
                 "https://dash.cloudflare.com/profile/api-tokens/create",
                 f"https://dash.cloudflare.com/{account_id}/api-tokens/create",
