@@ -214,7 +214,7 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
       const res = await fetch("/api/auth/logout", { method: "POST" });
       if (res.ok) {
         localStorage.removeItem("9r_authed");
-        navigate("/login");
+        navigate("/login?force=true");
         navigate(0);
       }
     } catch (err) {
