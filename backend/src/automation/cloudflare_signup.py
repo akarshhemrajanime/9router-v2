@@ -1641,68 +1641,113 @@ def main():
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(1)
 
-            # Account Resources — screenshot shows NATIVE <select> HTML dropdown (not React)
-            # "Include [Select... ▼]" — second dropdown is a native <select> with account options
-            # Strategy: find the native <select> that has empty/placeholder value, pick first option
+            # Account Resources — screenshot shows: [Include ▼][Select... ▼]
+            # CF validation: "Choose an account resource" (red) when empty
+            # The "Select..." is a custom CF dropdown (not native <select>, not React Select)
+            # Strategy: click the dropdown arrow, wait for options, click first option
+            # Also try: type in the search input if dropdown has search
             try:
-                acct_result = page.evaluate("""
-                    () => {
-                        // Find all <select> elements on the page
-                        const selects = Array.from(document.querySelectorAll('select'));
-                        for (const sel of selects) {
-                            const opts = Array.from(sel.options);
-                            // Find a select that has empty/placeholder first option
-                            if (opts.length > 0 && (opts[0].value === '' || opts[0].text.includes('Select'))) {
-                                // Get all real options (non-placeholder)
-                                const realOpts = opts.filter(o => o.value !== '' && !o.text.includes('Select'));
-                                if (realOpts.length > 0) {
-                                    // Pick the first real option
-                                    sel.value = realOpts[0].value;
-                                    sel.dispatchEvent(new Event('change', {bubbles: true}));
-                                    return 'selected: ' + realOpts[0].text + ' (value: ' + realOpts[0].value + ')';
-                                }
-                                // If only empty options, try selecting index 0
-                                return 'select found but only empty options: ' + opts.map(o=>o.text).join(', ');
-                            }
-                        }
-                        // Fallback: try selecting the second select (Account Resources is usually 2nd)
-                        if (selects.length >= 2) {
-                            const sel = selects[1];
-                            const opts = Array.from(sel.options);
-                            if (opts.length > 1) {
-                                sel.selectedIndex = 1;
-                                sel.dispatchEvent(new Event('change', {bubbles: true}));
-                                return 'selected index 1 on selects[1]: ' + opts[1].text;
-                            }
-                        }
-                        return 'no suitable select found (total selects: ' + selects.length + ')';
-                    }
-                """)
-                log_step(f"Account Resources native select: {acct_result}")
-
-                # Playwright fallback: select_option on the Account Resources <select>
-                if "no suitable" in acct_result or "only empty" in acct_result:
+                # Step 1: Click the "Select..." dropdown button
+                ar_opened = False
+                for ar_sel in [
+                    # The dropdown trigger (the visible "Select..." element with ▼ arrow)
+                    "[class*='account'] [class*='select'], [class*='resources'] [class*='select']",
+                    # Playwright: button near "Account Resources" heading
+                    "section:has-text('Account Resources') button",
+                    # Any element with text "Select..." that is a button/input trigger
+                    "[aria-haspopup] >> text='Select...'",
+                    "[aria-expanded] >> text='Select...'",
+                ]:
                     try:
-                        # Find <select> near "Account Resources" text using locator
-                        for sel_loc in [
-                            "section:has-text('Account Resources') select",
-                            "[class*='account'] select",
-                            "select:near(:text('Account Resources'))",
-                        ]:
+                        btn = page.locator(ar_sel).first
+                        if btn.count() > 0 and btn.is_visible(timeout=800):
+                            btn.click()
+                            time.sleep(1.5)
+                            ar_opened = True
+                            log_step(f"Account Resources dropdown opened via: {ar_sel}")
+                            break
+                    except Exception:
+                        continue
+
+                # Step 2: If no specific selector worked, find "Select..." text element via JS and click parent
+                if not ar_opened:
+                    result = page.evaluate("""
+                        () => {
+                            // Find the Account Resources section "Select..." trigger
+                            // Look for the container with the dropdown arrow
+                            const allDivs = Array.from(document.querySelectorAll('div, button, span'));
+                            for (const el of allDivs) {
+                                // Find element that contains exactly "Select..." text and has children (=dropdown trigger)
+                                if (el.textContent.trim() === 'Select...' && el.children.length === 0) {
+                                    // Walk up to find clickable parent (the dropdown trigger wrapper)
+                                    let parent = el.parentElement;
+                                    for (let i = 0; i < 4 && parent; i++) {
+                                        if (parent.tagName === 'BUTTON' || parent.getAttribute('role') === 'button' ||
+                                            parent.getAttribute('aria-haspopup') || parent.getAttribute('aria-expanded') !== null) {
+                                            parent.click();
+                                            return 'clicked parent: ' + parent.tagName + ' ' + (parent.getAttribute('role') || '');
+                                        }
+                                        parent = parent.parentElement;
+                                    }
+                                    // Fallback: click the element itself
+                                    el.click();
+                                    return 'clicked placeholder text itself';
+                                }
+                            }
+                            return 'Select... not found';
+                        }
+                    """)
+                    log_step(f"Account Resources JS parent click: {result}")
+                    if "clicked" in result:
+                        time.sleep(1.5)
+                        ar_opened = True
+
+                # Step 3: Click the first visible option OR type to search
+                if ar_opened:
+                    # Log all visible options
+                    try:
+                        opts_visible = page.evaluate("""
+                            () => {
+                                const opts = Array.from(document.querySelectorAll("[role='option'], [class*='option'], li[class*='item']"));
+                                return opts.filter(o => {
+                                    const r = o.getBoundingClientRect();
+                                    return r.width > 0 && r.height > 0;
+                                }).map(o => o.textContent.trim()).slice(0, 10);
+                            }
+                        """)
+                        log_step(f"Account Resources visible options: {opts_visible}")
+
+                        if opts_visible:
+                            # Click first option
+                            opt = page.locator("[role='option'], [class*='option']").first
+                            if opt.count() > 0 and opt.is_visible(timeout=1000):
+                                txt = opt.text_content() or "?"
+                                opt.click()
+                                time.sleep(0.5)
+                                log_step(f"Account Resources option clicked: {txt[:50]}")
+                        else:
+                            # No options visible — try typing the account ID (we have it!)
                             try:
-                                s = page.locator(sel_loc).first
-                                if s.count() > 0:
-                                    opts = s.evaluate("el => Array.from(el.options).map(o => ({v: o.value, t: o.text}))")
-                                    log_step(f"Account select options: {opts}")
-                                    non_empty = [o for o in opts if o['v']]
-                                    if non_empty:
-                                        s.select_option(value=non_empty[0]['v'])
-                                        log_step(f"Account Resources Playwright: {non_empty[0]['t']}")
-                                    break
-                            except Exception:
-                                continue
+                                active = page.evaluate("document.activeElement ? document.activeElement.tagName + ':' + document.activeElement.type : 'none'")
+                                log_step(f"Active element after dropdown click: {active}")
+                                # Type account ID fragment to search
+                                page.keyboard.type(account_id[:8])
+                                time.sleep(1.5)
+                                opts2 = page.locator("[role='option'], [class*='option']").all()
+                                log_step(f"Options after typing account ID: {len(opts2)}")
+                                if opts2:
+                                    txt2 = opts2[0].text_content() or "?"
+                                    opts2[0].click()
+                                    time.sleep(0.5)
+                                    log_step(f"Account Resources option via search: {txt2[:50]}")
+                                else:
+                                    # Escape and leave blank - form might still work
+                                    page.keyboard.press("Escape")
+                                    log_step("Account Resources: no options found even after search")
+                            except Exception as e:
+                                log_step(f"Account Resources search: {e}")
                     except Exception as e:
-                        log_step(f"Account Resources Playwright fallback: {e}")
+                        log_step(f"Account Resources options: {e}")
             except Exception as e:
                 log_step(f"Account Resources error: {e}")
 
