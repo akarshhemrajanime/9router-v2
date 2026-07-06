@@ -1121,10 +1121,12 @@ def main():
                             log_step(f"Pre-existing msgs: {len(seen_msg_ids)}")
                         except Exception: pass
 
-                        # Poll ammail for the OTP
+                        # Poll ammail for the OTP (36 × 5s = 3 minutes)
                         otp_code = None
-                        for _ in range(20):
+                        for _poll_i in range(36):
                             time.sleep(5)
+                            log_step(f"OTP poll {_poll_i+1}/36...")
+
                             try:
                                 msgs_resp = ammail_request(_ammail_base_url, _ammail_api_key,
                                                       f"/inboxes/{urllib.parse.quote(args.email.split('@')[0])}/messages")
