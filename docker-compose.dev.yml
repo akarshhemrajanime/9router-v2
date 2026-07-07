@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  9router-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: 9router-v2-dev
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+      - "5177:5177"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - REQUIRE_LOGIN=false
+      - JWT_SECRET=dev-secret
+      - ADMIN_PASSWORD=admin
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/backend/node_modules
+      - /app/frontend/node_modules
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
