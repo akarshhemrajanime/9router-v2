@@ -1,0 +1,19 @@
+# Dockerfile untuk Hugging Face Spaces
+# Menggunakan pre-built image dari decolua/9router
+FROM decolua/9router:latest
+
+# Konfigurasi untuk Hugging Face Spaces
+ENV PORT=7860
+ENV HOSTNAME=0.0.0.0
+ENV NODE_ENV=production
+ENV DATA_DIR=/data
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Setup data directory
+RUN mkdir -p /data && chown -R node:node /data
+
+# Expose port yang digunakan Hugging Face Spaces
+EXPOSE 7860
+
+# Container akan menjalankan custom-server.js dari base image
+# (sudah terdefinisi di image decolua/9router)
